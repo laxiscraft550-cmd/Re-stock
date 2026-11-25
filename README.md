@@ -31,3 +31,6 @@ Corre en tu PC: vigila solo mientras esté encendida, despierta y con internet.
 Si una tienda bloquea (probado: Mercado Libre, Sercoplus) el bot lo dice y no intenta saltarlo.
 Las promociones bancarias o cupones que solo salen en el carrito no se ven.
 Pruebas: `python pruebas.py`
+
+## Llevarlo en USB
+`powershell -ExecutionPolicy Bypass -File crear_portatil.ps1` crea `C:ot-ofertas-portatil`; cópiala al USB. Luego `1-pasar_a_usb.bat` en esta PC, `iniciar.bat` en cualquiera y `2-volver_a_pc.bat` al regresar. Nunca dos encendidos a la vez. El USB llevará tu token.

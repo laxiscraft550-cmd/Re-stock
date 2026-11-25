@@ -333,6 +333,8 @@ class Bot:
                 us = self.tg("getUpdates", 65, offset=off, timeout=50, allowed_updates=["message", "callback_query"])
             except RuntimeError as ex:
                 log.warning("%s", ex)
+                if "Conflict" in str(ex):
+                    print("OJO: el bot está encendido en otra computadora. Apaga una de las dos.", flush=True)
                 time.sleep(5)
                 continue
             for u in us:
