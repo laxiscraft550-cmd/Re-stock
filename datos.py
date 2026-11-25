@@ -20,6 +20,9 @@ class Datos:
             CREATE TABLE IF NOT EXISTS historial(
               producto INTEGER REFERENCES productos(id), fecha REAL, precio REAL, tarjeta REAL);
             """)
+            cols = {r[1] for r in self.c.execute("PRAGMA table_info(productos)")}
+            if "siguiente" not in cols:
+                self.c.execute("ALTER TABLE productos ADD COLUMN siguiente REAL DEFAULT 0")
 
     def q(self, sql, *a):
         with self.l:

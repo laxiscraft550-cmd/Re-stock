@@ -9,9 +9,12 @@
                        |-- reglas.py: decide si avisar
                        '-- datos.py: SQLite (ofertas.db), productos e historial
 
+Lo demás se revisa cada 20 min; tiempos: `/intervalo` y `/stock`. Si una tienda bloquea, el bot espacia sus consultas.
+
 Corre en tu PC: vigila solo mientras esté encendida, despierta y con internet.
 
 ## Cuándo avisa
+- **Vuelve el stock**, con el precio al que salió (lo agotado se revisa cada 3 min).
 - Baja 3% o más frente a la última referencia (configurable en `.env`).
 - Llega a tu precio objetivo, o baja / aparece el precio con tarjeta de la tienda.
 - Antes de avisar relee la página para confirmar. No repite el mismo aviso.
@@ -21,6 +24,8 @@ Corre en tu PC: vigila solo mientras esté encendida, despierta y con internet.
 1. Descarga el repositorio en una ruta corta (p. ej. `C:bot-ofertas`) y copia `.env.example` como `.env`.
 2. En Telegram, @BotFather -> /newbot. Pega el token (nunca lo subas al repo) en `.env` (TELEGRAM_TOKEN=...).
 3. Doble clic en `iniciar.bat` y abre el link que muestra, para hacerte dueño.
+
+4. Para dejarlo siempre encendido: `powershell -ExecutionPolicy Bypass -File instalar_inicio.ps1`
 
 ## Límites
 Si una tienda bloquea (probado: Mercado Libre, Sercoplus) el bot lo dice y no intenta saltarlo.

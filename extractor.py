@@ -27,7 +27,7 @@ class NoExiste(ErrorTienda):
 @dataclass
 class Producto:
     nombre: str
-    precio: float
+    precio: float                   # 0 = agotado y la tienda no muestra precio
     lista: float | None = None      # precio "normal" tachado
     tarjeta: float | None = None    # precio con la tarjeta de la tienda
     moneda: str = "PEN"
@@ -205,11 +205,12 @@ def falabella(u, s):
         t = str(x.get("type", "")).lower()
         if n:
             (normal if "normal" in t else tarjeta if "cmr" in t else publico).append(n)
-    if not publico and not normal:
-        return None
-    precio = min(publico or normal)
+    # Las variantes agotadas no traen isPurchaseable.
+    hay = any("isPurchaseable" in x for x in vs)
+    stock = not p.get("isOutOfStock") and (bool(v.get("isPurchaseable")) if hay else None)
+    precio = min(publico or normal or [0])
     return Producto(p.get("name") or titulo(s), precio, max(normal) if normal else None,
-                    min(tarjeta) if tarjeta else None, stock=v.get("isPurchaseable"),
+                    min(tarjeta) if tarjeta else None, stock=stock,
                     metodo="Falabella/Sodimac/Tottus")
 
 
@@ -221,8 +222,9 @@ def ripley(u, s):
     except (TypeError, KeyError):
         return None
     v = lambda k: numero((pr.get(k) or {}).get("valueNumber"))
-    precio = v("sale") or v("master")
-    return precio and Producto(p.get("name") or titulo(s), precio, v("master"), v("ripley"), metodo="Ripley")
+    st = p["parentpricestock"].get("stock")
+    return Producto(p.get("name") or titulo(s), v("sale") or v("master") or 0, v("master"), v("ripley"),
+                    stock=st if isinstance(st, bool) else None, metodo="Ripley")
 
 
 def juntoz(u, s):
@@ -232,7 +234,9 @@ def juntoz(u, s):
         return None
     lista, esp = numero(m[1]), numero(m[2])
     usa = esp and m[3] != "false"
-    return Producto(titulo(s), esp if usa else lista, lista, metodo="Juntoz")
+    st = re.search(r'\\"specialPrice\\":[^,]+,\\"stock\\":(\d+)', str(s))
+    return Producto(titulo(s), (esp if usa else lista) or 0, lista,
+                    stock=int(st[1]) > 0 if st else None, metodo="Juntoz")
 
 
 def vtex(u):
@@ -255,7 +259,8 @@ def vtex(u):
     con = [o for o in ofertas if o.get("AvailableQuantity", 0) > 0 and numero(o.get("Price"))]
     val = con or [o for o in ofertas if numero(o.get("Price"))]
     if not val:
-        return None
+        # Agotado: VTEX publica precio 0.
+        return Producto(prod.get("productName", "Producto"), 0, stock=False, metodo="VTEX") if ofertas else None
     o = min(val, key=lambda x: x["Price"])
     return Producto(prod.get("productName", "Producto"), float(o["Price"]), numero(o.get("ListPrice")),
                     stock=bool(con), metodo="VTEX")
@@ -293,10 +298,10 @@ def jsonld(u, s):
             precios.append(v)
         mon = o.get("priceCurrency") or mon
         if o.get("availability") and stock is not True:
-            stock = "InStock" in str(o["availability"])
-    if precios:
-        p = min(precios)
-        return Producto(str(prod.get("name") or titulo(s)), p, lista or precio_tachado(s, p),
+            stock = not re.search(r"OutOfStock|SoldOut|Discontinued", str(o["availability"]), re.I)
+    if precios or stock is False:
+        p = min(precios or [0])
+        return Producto(str(prod.get("name") or titulo(s)), p, lista or (precio_tachado(s, p) if p else None),
                         moneda=mon, stock=stock, metodo="datos estructurados")
 
 
@@ -339,8 +344,31 @@ def visual(u, s):
             return Producto(titulo(s), v, metodo="lectura visual (verifica que sea correcto)")
 
 
+def stock_visual(s):
+    """Primer botón o texto de disponibilidad después del título; None si no se sabe."""
+    h = s.find("h1")
+    if not h:
+        return None
+    pat = re.compile(r"^\s*(agotado|producto agotado|sin stock|producto sin stock|producto no disponible|no disponible|"
+                     r"av[ií]same cuando|notif[ií]came|(agregar|añadir) al carr|agregar a la bolsa|comprar ahora)", re.I)
+    for t in h.find_all_next(string=pat, limit=10):
+        if t.find_parent(["script", "style", "template", "noscript", "option"]):
+            continue
+        if any("display:none" in (a.get("style") or "").replace(" ", "") or a.has_attr("hidden")
+               for a in list(t.parents)[:6]):
+            continue
+        if re.match(r"\s*(agregar|añadir|comprar)", t, re.I):
+            return not t.find_parent("button", disabled=True)
+        return False
+    return None
+
+
 def normalizar(r):
     r.nombre = re.sub(r"\s+", " ", html.unescape(r.nombre)).strip()[:150]
+    if not r.precio:
+        if r.stock is not False:
+            return None
+        r.lista = r.tarjeta = None
     if r.lista and r.lista <= r.precio:
         r.lista = None
     if r.tarjeta and r.tarjeta >= r.precio:
@@ -362,19 +390,28 @@ def analizar(u, texto):
             r = f(u, s)
         except (KeyError, TypeError, ValueError, AttributeError):
             continue
+        r = r and normalizar(r)
         if r:
-            return normalizar(r)
+            if r.stock is None:
+                r.stock = stock_visual(s)
+            return r
     return None
 
 
 def obtener(u):
     """Devuelve (url_final, Producto). Si la tienda bloquea, no se insiste."""
+    def api(x):
+        try:
+            r = vtex(x)
+        except ErrorTienda:
+            r = None
+        return r and normalizar(r)
+
+    r = api(u)                      # VTEX: una sola consulta ligera
+    if r:
+        return u, r
     final, texto = descargar(u)
-    try:
-        r = vtex(final)
-    except ErrorTienda:
-        r = None
-    r = normalizar(r) if r else analizar(final, texto)
+    r = (api(final) if final != u else None) or analizar(final, texto)
     if r:
         return final, r
     final, texto = descargar_con_chrome(u)

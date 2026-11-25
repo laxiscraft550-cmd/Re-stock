@@ -1,9 +1,15 @@
 """Decide cuándo un cambio de precio merece un aviso. Sin red ni base de datos."""
 
+VOLVIO = "Volvió el stock"
+
 
 def evaluar(f, p, pct):
     """f: fila guardada; p: Producto nuevo. Devuelve (motivos, campos a guardar)."""
+    if p.stock is False:                      # agotado no es oferta: se conservan las referencias
+        return [], {c: f[c] for c in ("ref", "ref_tarjeta", "objetivo_avisado", "minimo")}
     motivos, n = [], {}
+    if f["stock"] == 0 and p.stock:
+        motivos.append(VOLVIO)
     k = 1 - pct / 100
 
     def ref(vieja, nuevo, texto):
@@ -26,11 +32,7 @@ def evaluar(f, p, pct):
     if ok and not f["objetivo_avisado"]:
         motivos.append("Llegó a tu precio objetivo")
     n["objetivo_avisado"] = int(ok)
-    if p.stock is False:                      # sin stock no hay oferta: no gastar referencias
-        return [], {k2: f[k2] for k2 in ("ref", "ref_tarjeta", "objetivo_avisado", "minimo")}
     n["minimo"] = min(f["minimo"] or p.precio, p.precio)
     if motivos and f["minimo"] and p.precio < f["minimo"]:
         motivos.append("Es el precio más bajo que he visto")
-    if f["stock"] == 0 and p.stock:
-        motivos.append("Volvió a haber stock")
     return motivos, n

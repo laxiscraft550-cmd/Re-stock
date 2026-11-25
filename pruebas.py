@@ -32,6 +32,19 @@ def falla(u): raise ErrorTienda("caída")
 B.obtener = falla; out.clear()
 for _ in range(7): rev()
 assert len(out) == 1
-msg("/historial 1"); msg("/lista"); msg("/intervalo 5"); assert b.intervalo() == 30
+msg("/historial 1"); msg("/lista"); msg("/intervalo 5"); assert b.intervalo() == 10
 msg("/objetivo 1 ²"); msg("/borrar 1"); assert not b.db.producto(1)
+# stock
+pon(0, stock=False); b.agregar("https://t.pe/b"); assert "Agotado" in out[-1] and "desconocido" in out[-1]
+rev2 = lambda: b.revisar(b.db.producto(2))
+import time
+assert b.db.producto(2)["siguiente"] - time.time() < 200
+assert not rev2()
+pon(500.0, stock=True); b.enviar = lambda *a: False; assert not rev2(); b.enviar = ok
+assert rev2() and "HAY STOCK" in out[-1] and "S/ 500.00" in out[-1]
+assert not rev2()
+assert b.db.producto(2)["siguiente"] - time.time() > 500
+pon(0, stock=False); assert not rev2(); assert b.db.producto(2)["precio"] == 500
+pon(520.0, stock=True); assert rev2() and "520.00" in out[-1] and "Antes: S/ 500.00" in out[-1]
+assert b.ronda(True) == (1, 0)
 print("Todas las pruebas pasaron")

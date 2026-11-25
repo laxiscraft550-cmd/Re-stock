@@ -4,10 +4,11 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from urllib.parse import urlsplit
 import requests
 from datos import Datos
-from extractor import ErrorTienda, limpiar_url, obtener
-from reglas import evaluar
+from extractor import Bloqueado, ErrorTienda, NoExiste, limpiar_url, obtener
+from reglas import VOLVIO, evaluar
 
 AQUI = Path(__file__).parent
 log = logging.getLogger("bot")
@@ -20,7 +21,8 @@ Pégame el link de un producto y lo vigilo.
 /objetivo 3 199 – avisar cuando el nº 3 llegue a S/ 199
 /historial 3 – precios que he visto
 /borrar 3 – dejar de vigilar
-/intervalo 120 – minutos entre revisiones (mínimo 30)"""
+/intervalo 20 – minutos entre revisiones normales (mínimo 10)
+/stock 3 – minutos entre revisiones de lo agotado (mínimo 2)"""
 
 
 def leer_env():
@@ -75,15 +77,16 @@ class Bot:
     # ---- presentación ----
     def ficha(self, f):
         m = f["moneda"]
-        t = f"<b>#{f['id']}</b> <a href=\"{e(f['url'])}\">{e(f['nombre'])}</a>\n💰 <b>{dinero(f['precio'], m)}</b>"
+        t = f"<b>#{f['id']}</b> <a href=\"{e(f['url'])}\">{e(f['nombre'])}</a>"
+        t += f"\n💰 <b>{dinero(f['precio'], m)}</b>" if f["precio"] else "\n💰 Precio aún desconocido"
         if f["lista"]:
             t += f"  <s>{dinero(f['lista'], m)}</s> (-{round((1 - f['precio'] / f['lista']) * 100)}%)"
         if f["tarjeta"]:
             t += f"\n💳 Con tarjeta de la tienda: {dinero(f['tarjeta'], m)}"
         if f["objetivo"]:
             t += f"\n🎯 Objetivo: {dinero(f['objetivo'], m)}"
-        if f["stock"] == 0:
-            t += "\n🚫 Sin stock"
+        t += {1: "\n✅ Con stock", 0: "\n🚫 Agotado (te aviso cuando vuelva)"}.get(
+            f["stock"], "\n❔ No pude leer el stock: solo vigilo el precio")
         if f["fallos"]:
             t += f"\n⚠️ {e(f['error'])}"
         return t
@@ -104,8 +107,10 @@ class Bot:
             return self.enviar("Ya lo vigilo:\n\n" + self.ficha(ya[0]))
         i = self.db.x("""INSERT INTO productos(url,nombre,moneda,precio,lista,tarjeta,stock,ref,ref_tarjeta,minimo,revisado)
             VALUES(?,?,?,?,?,?,?,?,?,?,?)""", final, p.nombre, p.moneda, p.precio, p.lista, p.tarjeta,
-            None if p.stock is None else int(p.stock), p.precio, p.tarjeta, p.precio, time.time())
-        self.db.x("INSERT INTO historial VALUES(?,?,?,?)", i, time.time(), p.precio, p.tarjeta)
+            None if p.stock is None else int(p.stock), p.precio or None, p.tarjeta, p.precio or None, time.time())
+        self.programar(i)
+        if p.precio:
+            self.db.x("INSERT INTO historial VALUES(?,?,?,?)", i, time.time(), p.precio, p.tarjeta)
         ya_oferta = "\n\n🔥 La tienda ya lo muestra en oferta." if p.lista else ""
         self.enviar(f"✅ Vigilando\n\n{self.ficha(self.db.producto(i))}{ya_oferta}\n\n<i>Leído por: {e(p.metodo)}. "
                     "Compara el precio con la tienda; si no coincide, bórralo.</i>",
@@ -116,19 +121,24 @@ class Bot:
         i = f["id"]
         try:
             _, p = obtener(f["url"])
-            if p.moneda != f["moneda"]:
+            if p.precio and f["precio"] and p.moneda != f["moneda"]:
                 raise ErrorTienda("Cambió la moneda del precio.")
             motivos, n = evaluar(f, p, self.pct)
             if motivos:   # segunda lectura para descartar errores momentáneos de la tienda
-                time.sleep(self.espera_confirmar)
+                time.sleep(min(3, self.espera_confirmar) if VOLVIO in motivos else self.espera_confirmar)
                 _, p2 = obtener(f["url"])
-                if abs(p2.precio - p.precio) > 0.01 or p2.tarjeta != p.tarjeta:
+                if VOLVIO in motivos and p2.stock:
+                    p = p2
+                elif abs(p2.precio - p.precio) > 0.01 or p2.tarjeta != p.tarjeta or p2.stock != p.stock:
                     raise ErrorTienda("Precio inestable; lo confirmo en la próxima revisión.")
         except Exception as ex:
             if not isinstance(ex, ErrorTienda):
                 log.exception("producto %s", i)
             msg = str(ex) if isinstance(ex, ErrorTienda) else "Error inesperado al leer la tienda."
             self.db.x("UPDATE productos SET fallos=fallos+1,error=?,revisado=? WHERE id=?", msg, time.time(), i)
+            if isinstance(ex, NoExiste) and f["fallos"]:   # algunas tiendas retiran la página al agotarse
+                self.db.x("UPDATE productos SET stock=0 WHERE id=?", i)
+            self.programar(i, bloqueado=isinstance(ex, Bloqueado))
             if f["fallos"] + 1 == 5:
                 self.enviar(f"⚠️ Llevo 5 intentos sin poder leer esto:\n\n{self.ficha(self.db.producto(i))}")
             return False
@@ -136,36 +146,66 @@ class Bot:
         if not f:
             return False
         motivos, n = evaluar(f, p, self.pct)   # por si cambió el objetivo mientras tanto
+        if not p.precio:                       # agotado sin precio: conservar el último conocido
+            p.precio, p.lista, p.tarjeta = f["precio"], f["lista"], f["tarjeta"]
         if f["precio"] != p.precio or f["tarjeta"] != p.tarjeta:
             self.db.x("INSERT INTO historial VALUES(?,?,?,?)", i, time.time(), p.precio, p.tarjeta)
         antes = f["precio"]
-        self.db.x("""UPDATE productos SET nombre=?,precio=?,lista=?,tarjeta=?,stock=COALESCE(?,stock),
-            fallos=0,error=NULL,revisado=? WHERE id=?""", p.nombre, p.precio, p.lista, p.tarjeta,
+        self.db.x("""UPDATE productos SET nombre=?,moneda=?,precio=?,lista=?,tarjeta=?,stock=COALESCE(?,stock),
+            fallos=0,error=NULL,revisado=? WHERE id=?""", p.nombre, p.moneda, p.precio, p.lista, p.tarjeta,
             None if p.stock is None else int(p.stock), time.time(), i)
         if motivos:
-            t = "🔥 <b>¡OFERTA!</b> " + e(" · ".join(motivos)) + "\n\n" + self.ficha(self.db.producto(i))
-            if antes != p.precio:
+            cab = "📦 <b>¡HAY STOCK!</b> " if VOLVIO in motivos else "🔥 <b>¡OFERTA!</b> "
+            t = cab + e(" · ".join(motivos)) + "\n\n" + self.ficha(self.db.producto(i))
+            if antes and antes != p.precio:
                 t += f"\nAntes: {dinero(antes, f['moneda'])}"
             if not self.enviar(t, [[{"text": "🛒 Ver en la tienda", "url": f["url"]}]]):
+                self.db.x("UPDATE productos SET stock=? WHERE id=?", f["stock"], i)
+                self.programar(i)
                 return False    # las referencias no cambian: se reintenta en la próxima revisión
         self.db.x("UPDATE productos SET ref=?,ref_tarjeta=?,objetivo_avisado=?,minimo=? WHERE id=?",
                   n["ref"], n["ref_tarjeta"], n["objetivo_avisado"], n["minimo"], i)
+        self.programar(i)
         return bool(motivos)
 
     def intervalo(self):
-        return max(30, int(self.db.ajuste("intervalo") or os.environ.get("INTERVALO_MINUTOS", 120)))
+        return max(10, int(self.db.ajuste("intervalo") or os.environ.get("INTERVALO_MINUTOS", 20)))
+
+    def intervalo_stock(self):
+        return max(2, int(self.db.ajuste("intervalo_stock") or os.environ.get("INTERVALO_AGOTADOS", 3)))
+
+    def programar(self, i, bloqueado=False):
+        """Lo agotado se revisa más seguido; si la tienda bloquea, se espera cada vez más."""
+        f = self.db.producto(i)
+        if f:
+            m = self.intervalo_stock() if f["stock"] == 0 else self.intervalo()
+            if bloqueado:
+                m = min(max(m, 15) * 2 ** min(f["fallos"], 4), 240)
+            self.db.x("UPDATE productos SET siguiente=? WHERE id=?", time.time() + m * 60 * random.uniform(.9, 1.1), i)
 
     def ronda(self, todos=False):
         with self.ocupado:
-            lim = time.time() + 1 if todos else time.time() - self.intervalo() * 60
-            avisos = 0
-            filas = self.db.q("SELECT id FROM productos WHERE revisado<? ORDER BY revisado", lim)
+            filas = self.db.q("SELECT id,url FROM productos WHERE siguiente<=? ORDER BY stock IS 0 DESC, siguiente",
+                              float("inf") if todos else time.time())
+            tiendas = {}
             for f in filas:
-                f = self.db.producto(f["id"])
-                if f:
-                    avisos += self.revisar(f)
-                    time.sleep(random.uniform(3, 7))
-            return len(filas), avisos
+                tiendas.setdefault(urlsplit(f["url"]).hostname, []).append(f["id"])
+
+            def tienda(ids):        # tiendas en paralelo; dentro de cada una, de a uno y con pausa
+                avisos = 0
+                for n, i in enumerate(ids):
+                    if n:
+                        time.sleep(random.uniform(2, 4))
+                    f = self.db.producto(i)
+                    if f:
+                        try:
+                            avisos += self.revisar(f)
+                        except Exception:
+                            log.exception("revisar %s", i)
+                return avisos
+
+            with ThreadPoolExecutor(4) as pool:
+                return len(filas), sum(pool.map(tienda, tiendas.values()))
 
     def vigilar(self):
         while True:
@@ -174,7 +214,7 @@ class Bot:
                     self.ronda()
             except Exception:
                 log.exception("ronda")
-            time.sleep(60)
+            time.sleep(10)
 
     # ---- comandos ----
     def revisar_todo(self):
@@ -217,8 +257,15 @@ class Bot:
         elif cmd == "/revisar":
             self.pool.submit(self.seguro, self.revisar_todo)
         elif cmd == "/intervalo" and num:
-            self.db.guardar("intervalo", min(max(30, num), 10080))
+            self.db.guardar("intervalo", min(max(10, num), 1440))
+            for f in self.db.q("SELECT id FROM productos"):
+                self.programar(f["id"])
             self.enviar(f"Revisaré cada {self.intervalo()} minutos.")
+        elif cmd == "/stock" and num:
+            self.db.guardar("intervalo_stock", min(max(2, num), 1440))
+            for f in self.db.q("SELECT id FROM productos WHERE stock=0"):
+                self.programar(f["id"])
+            self.enviar(f"Revisaré lo agotado cada {self.intervalo_stock()} minutos.")
         elif cmd in ("/borrar", "/objetivo", "/historial") and num is not None:
             f = self.db.producto(num)
             if not f:
@@ -236,7 +283,7 @@ class Bot:
                     v = 0
                 if not 0 < v < 1e7:
                     return self.enviar("Ejemplo: /objetivo 3 199")
-                ya = f["precio"] <= v
+                ya = bool(f["precio"]) and f["precio"] <= v and f["stock"] != 0
                 self.db.x("UPDATE productos SET objetivo=?,objetivo_avisado=? WHERE id=?", v, int(ya), num)
                 self.enviar(f"🎯 Te aviso cuando llegue a {dinero(v, f['moneda'])}." +
                             (" ¡Ya está en ese precio!" if ya else ""))
