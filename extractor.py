@@ -194,6 +194,7 @@ def falabella(u, s):
     ids = [x for x in urlsplit(u).path.split("/") if x.isdigit()]
     pedido = ids[-1] if ids else None
     v = (next((x for x in vs if str(x.get("id")) == pedido), None)
+         or next((x for x in vs if x.get("isPurchaseable")), None)   # link sin variante: cualquiera disponible
          or next((x for x in vs if str(x.get("id")) == str(p.get("currentVariant"))), None)
          or (vs[0] if vs else None))
     if not v:
@@ -207,7 +208,10 @@ def falabella(u, s):
             (normal if "normal" in t else tarjeta if "cmr" in t else publico).append(n)
     # Las variantes agotadas no traen isPurchaseable.
     hay = any("isPurchaseable" in x for x in vs)
-    stock = not p.get("isOutOfStock") and (bool(v.get("isPurchaseable")) if hay else None)
+    if p.get("isOutOfStock"):
+        stock = False
+    else:
+        stock = bool(v.get("isPurchaseable")) if hay else None
     precio = min(publico or normal or [0])
     return Producto(p.get("name") or titulo(s), precio, max(normal) if normal else None,
                     min(tarjeta) if tarjeta else None, stock=stock,
@@ -345,21 +349,24 @@ def visual(u, s):
 
 
 def stock_visual(s):
-    """Primer botón o texto de disponibilidad después del título; None si no se sabe."""
+    """Solo afirma algo si la página es inequívoca; ante la duda, None."""
     h = s.find("h1")
     if not h:
         return None
-    pat = re.compile(r"^\s*(agotado|producto agotado|sin stock|producto sin stock|producto no disponible|no disponible|"
-                     r"av[ií]same cuando|notif[ií]came|(agregar|añadir) al carr|agregar a la bolsa|comprar ahora)", re.I)
-    for t in h.find_all_next(string=pat, limit=10):
-        if t.find_parent(["script", "style", "template", "noscript", "option"]):
-            continue
-        if any("display:none" in (a.get("style") or "").replace(" ", "") or a.has_attr("hidden")
-               for a in list(t.parents)[:6]):
-            continue
-        if re.match(r"\s*(agregar|añadir|comprar)", t, re.I):
-            return not t.find_parent("button", disabled=True)
-        return False
+
+    def visibles(pat, desde):
+        for t in desde.find_all_next(string=re.compile(pat, re.I)):
+            if t.find_parent(["script", "style", "template", "noscript", "option"]):
+                continue
+            if not any("display:none" in (a.get("style") or "").replace(" ", "") or a.has_attr("hidden")
+                       for a in list(t.parents)[:6]):
+                yield t
+
+    compra = list(visibles(r"^\s*((agregar|añadir) al carr|agregar a la bolsa|añadir a la cesta|comprar ahora)", h))
+    agotado = list(visibles(r"^\s*(producto )?(agotado|sin stock)\b", h))
+    # Nunca devuelve False: muchas páginas traen "Agotado" oculto o de otro producto.
+    if compra and not agotado and not compra[0].find_parent("button", disabled=True):
+        return True
     return None
 
 
@@ -392,8 +399,9 @@ def analizar(u, texto):
             continue
         r = r and normalizar(r)
         if r:
-            if r.stock is None:
-                r.stock = stock_visual(s)
+            if r.stock is None:         # primero el dato oficial de la página; lo visual es lo último
+                d = f is not jsonld and jsonld(u, s)
+                r.stock = d.stock if d and d.stock is not None else stock_visual(s)
             return r
     return None
 

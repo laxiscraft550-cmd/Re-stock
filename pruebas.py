@@ -35,6 +35,15 @@ assert len(out) == 1
 msg("/historial 1"); msg("/lista"); msg("/intervalo 5"); assert b.intervalo() == 10
 msg("/objetivo 1 ²"); msg("/borrar 1"); assert not b.db.producto(1)
 # stock
+from bs4 import BeautifulSoup as BS
+from extractor import analizar, stock_visual
+sv = lambda h: stock_visual(BS("<h1>x</h1>" + h, "html.parser"))
+assert sv("<p>Agotado</p>") is None and sv("<button>Agregar al carrito</button>") is True
+assert sv("<p>Agotado</p><button>Agregar al carrito</button>") is None
+assert sv("<p hidden>Agotado</p>") is None and sv("<p>Notifícame</p>") is None
+lecturas = [False, True]
+B.obtener = lambda u: ("u", Producto("x", 5.0, stock=lecturas.pop(0)))
+assert b.leer("u", 1)[1].stock is True
 pon(0, stock=False); b.agregar("https://t.pe/b"); assert "Agotado" in out[-1] and "desconocido" in out[-1]
 rev2 = lambda: b.revisar(b.db.producto(2))
 import time

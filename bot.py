@@ -93,13 +93,21 @@ class Bot:
         return t
 
     # ---- vigilancia ----
+    def leer(self, url, stock_previo=None):
+        """No acepta un "agotado" nuevo sin leerlo dos veces."""
+        r = obtener(url)
+        if r[1].stock is False and stock_previo != 0:
+            time.sleep(min(4, self.espera_confirmar))
+            r = obtener(url)
+        return r
+
     def agregar(self, url):
         url = limpiar_url(url)
         ya = self.db.q("SELECT * FROM productos WHERE url=?", url)
         if ya:
             return self.enviar("Ya lo vigilo:\n\n" + self.ficha(ya[0]))
         try:
-            final, p = obtener(url)
+            final, p = self.leer(url)
         except ErrorTienda as ex:
             return self.enviar(f"❌ {e(ex)}\nNo lo agregué.")
         final = limpiar_url(final)
@@ -121,7 +129,7 @@ class Bot:
         """True si hubo aviso."""
         i = f["id"]
         try:
-            _, p = obtener(f["url"])
+            _, p = self.leer(f["url"], f["stock"])
             if p.precio and f["precio"] and p.moneda != f["moneda"]:
                 raise ErrorTienda("Cambió la moneda del precio.")
             motivos, n = evaluar(f, p, self.pct)
