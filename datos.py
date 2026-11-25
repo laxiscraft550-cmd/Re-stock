@@ -6,6 +6,7 @@ RUTA = Path(__file__).with_name("ofertas.db")
 
 class Datos:
     def __init__(self, ruta=RUTA):
+        self.ruta = ruta
         self.l = threading.RLock()
         self.c = sqlite3.connect(ruta, check_same_thread=False)
         self.c.row_factory = sqlite3.Row
@@ -23,6 +24,26 @@ class Datos:
             cols = {r[1] for r in self.c.execute("PRAGMA table_info(productos)")}
             if "siguiente" not in cols:
                 self.c.execute("ALTER TABLE productos ADD COLUMN siguiente REAL DEFAULT 0")
+
+    def exportar(self):
+        with self.l:
+            return self.c.serialize()
+
+    def importar(self, datos):
+        """Reemplaza los datos locales por los de otra computadora (guarda antes una copia)."""
+        n = sqlite3.connect(":memory:")
+        n.deserialize(datos)
+        if n.execute("PRAGMA integrity_check").fetchone()[0] != "ok" or not n.execute(
+                "SELECT 1 FROM ajustes WHERE k='dueno'").fetchone():
+            raise ValueError("copia dañada")
+        with self.l:
+            self.c.commit()
+            if self.ruta != ":memory:":
+                ant = sqlite3.connect(str(self.ruta) + ".anterior")
+                self.c.backup(ant)
+                ant.close()
+            n.backup(self.c)
+        n.close()
 
     def q(self, sql, *a):
         with self.l:

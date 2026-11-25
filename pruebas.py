@@ -47,4 +47,32 @@ assert b.db.producto(2)["siguiente"] - time.time() > 500
 pon(0, stock=False); assert not rev2(); assert b.db.producto(2)["precio"] == 500
 pon(520.0, stock=True); assert rev2() and "520.00" in out[-1] and "Antes: S/ 500.00" in out[-1]
 assert b.ronda(True) == (1, 0)
+# sincronización entre dos computadoras (Telegram simulado)
+import json as J
+from sync import Sync
+nube = {}
+class S(Sync):
+    def fijado(self):
+        if not nube: return None
+        import re
+        from sync import PAT
+        r = PAT.search(nube["cap"]); return {"message_id": 1}, r[1], r[2]
+    def archivo(self, metodo, d, campo):
+        nube.update(cap=d.get("caption") or J.loads(d["media"])["caption"], db=self.db.exportar()); return {"message_id": 1}
+    def bajar(self, m): return nube["db"]
+def copia():
+    x = B.Bot("x", Datos(":memory:")); x.db.guardar("dueno", 1)
+    x.tg = lambda m, _t=0, **d: nube.update(cap=d["caption"]) if m == "editMessageCaption" else {}
+    return x, S(x, 9)
+pc1, s1 = copia(); pc2, s2 = copia()
+s1.tomar(0); pon(10.0, stock=True); pc1.agregar("https://t.pe/z"); assert s1.paso()
+s2.tomar(0); assert pc2.db.q("SELECT url FROM productos")[0][0] == "https://t.pe/a"
+assert not s1.paso() and s2.paso()
+pc2.borrar(1); assert s2.paso()
+_, s3 = pc1, S(pc1, 9); s3.tomar(0); assert not pc1.db.q("SELECT * FROM productos") and not s2.paso()
+pon(11.0, stock=True); pc1.agregar("https://t.pe/y")      # se cerró antes de publicar
+s4 = S(pc1, 9); s4.tomar(0); assert pc1.db.q("SELECT * FROM productos")   # no pierde lo local
+try: pc1.db.importar(b"basura"); assert 0
+except Exception as ex: assert not isinstance(ex, AssertionError)
+assert pc1.db.q("SELECT * FROM productos")
 print("Todas las pruebas pasaron")

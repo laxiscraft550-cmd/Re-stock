@@ -8,6 +8,7 @@ from urllib.parse import urlsplit
 import requests
 from datos import Datos
 from extractor import Bloqueado, ErrorTienda, NoExiste, limpiar_url, obtener
+from sync import Sync
 from reglas import VOLVIO, evaluar
 
 AQUI = Path(__file__).parent
@@ -325,7 +326,17 @@ class Bot:
             if not self.db.ajuste("codigo"):
                 self.db.guardar("codigo", secrets.token_hex(8))
             print(f"Abre este link para hacerte dueño del bot:\nhttps://t.me/{yo['username']}?start={self.db.ajuste('codigo')}")
-        print("Bot encendido. Ctrl+C para detener.", flush=True)
+        s = Sync(self, yo["id"])
+        while self.db.ajuste("dueno") and not s.activo:
+            print("Preparando datos (unos 30 segundos)...", flush=True)
+            try:
+                s.tomar()
+            except Exception as ex:
+                log.warning("sync: %s", ex)
+                print("No pude preparar los datos; reintento en 10 segundos.", flush=True)
+                time.sleep(10)
+        print("Bot encendido. Deja esta ventana abierta; ciérrala para apagarlo.", flush=True)
+        threading.Thread(target=s.vigilar, daemon=True).start()
         threading.Thread(target=self.vigilar, daemon=True).start()
         off = int(self.db.ajuste("offset", 0))
         while True:

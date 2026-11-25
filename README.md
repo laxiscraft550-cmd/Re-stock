@@ -25,12 +25,13 @@ Corre en tu PC: vigila solo mientras esté encendida, despierta y con internet.
 2. En Telegram, @BotFather -> /newbot. Pega el token (nunca lo subas al repo) en `.env` (TELEGRAM_TOKEN=...).
 3. Doble clic en `iniciar.bat` y abre el link que muestra, para hacerte dueño.
 
-4. Para dejarlo siempre encendido: `powershell -ExecutionPolicy Bypass -File instalar_inicio.ps1`
 
 ## Límites
 Si una tienda bloquea (probado: Mercado Libre, Sercoplus) el bot lo dice y no intenta saltarlo.
 Las promociones bancarias o cupones que solo salen en el carrito no se ven.
 Pruebas: `python pruebas.py`
 
-## Llevarlo en USB
-`powershell -ExecutionPolicy Bypass -File crear_portatil.ps1` crea `C:ot-ofertas-portatil`; cópiala al USB. Luego `1-pasar_a_usb.bat` en esta PC, `iniciar.bat` en cualquiera y `2-volver_a_pc.bat` al regresar. Nunca dos encendidos a la vez. El USB llevará tu token.
+## Usarlo en varias computadoras
+`powershell -ExecutionPolicy Bypass -File crear_portatil.ps1` crea `C:\bot-ofertas-otra-pc` con Python incluido
+(lleva tu token: no la publiques). Cópiala a la otra PC y abre `iniciar.bat`. Los datos se comparten por un archivo
+fijado en el chat del bot; al abrirlo en una PC, la otra se apaga sola.
